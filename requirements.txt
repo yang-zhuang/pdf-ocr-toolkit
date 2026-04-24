@@ -1,0 +1,24 @@
+# PDF OCR Toolkit 依赖包
+
+# OCR 核心库
+paddleocr>=2.7.0
+paddlepaddle>=2.5.0
+
+# MongoDB 支持
+pymongo>=4.0.0
+
+# 环境变量管理
+python-dotenv>=1.0.0
+
+# 进度条
+tqdm>=4.65.0
+
+# 图像处理
+pillow>=10.0.0
+
+# HTTP 请求
+requests>=2.31.0
+
+# 其他工具
+pathlib>=1.0.0
+typing>=3.7.0
