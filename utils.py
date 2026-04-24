@@ -100,24 +100,26 @@ def save_markdown(processing_result: Dict[str, Any], output_path: str) -> None:
 def save_all(
     processing_result: Dict[str, Any],
     source_file: str,
-    output_dir: str,
+    output_dir: Optional[str] = None,
     base_filename: Optional[str] = None,
-    save_images: bool = True,
-    save_json: bool = True,
-    save_markdown: bool = True,
+    save_images_flag: bool = True,
+    save_json_flag: bool = True,
+    save_markdown_flag: bool = True,
 ) -> None:
-    """保存所有结果"""
+    """保存所有结果，默认在PDF同目录下创建同名文件夹存放"""
     if not base_filename:
         base_filename = Path(source_file).stem
+    if not output_dir:
+        output_dir = str(Path(source_file).parent / base_filename)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if save_images:
+    if save_images_flag:
         save_images(processing_result, str(output_dir))
-    if save_json:
+    if save_json_flag:
         save_json(processing_result, source_file, str(output_dir / f"{base_filename}.json"))
-    if save_markdown:
+    if save_markdown_flag:
         save_markdown(processing_result, str(output_dir / f"{base_filename}.md"))
 
 

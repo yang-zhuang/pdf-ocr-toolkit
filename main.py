@@ -25,11 +25,6 @@ def process_pdf(file_path: str, backend: str = "paddle", **backend_config) -> Di
 
     Returns:
         处理结果字典
-
-    Example:
-        >>> from pdf_ocr_toolkit import process_pdf
-        >>> result = process_pdf("paper.pdf", backend="paddle")
-        >>> print(result['full_markdown'])
     """
     ocr_func = get_backend(backend)
     return ocr_func(file_path, **backend_config)
@@ -38,7 +33,6 @@ def process_pdf(file_path: str, backend: str = "paddle", **backend_config) -> Di
 def process_batch(
     file_paths: Union[List[str], str],
     backend: str = "paddle",
-    output_dir: str = "./output",
     **backend_config
 ) -> List[Dict[str, Any]]:
     """
@@ -47,7 +41,6 @@ def process_batch(
     Args:
         file_paths: 文件列表或目录路径
         backend: OCR后端
-        output_dir: 输出目录
         **backend_config: 后端配置
 
     Returns:
@@ -67,8 +60,8 @@ def process_batch(
             result = process_pdf(file_path, backend, **backend_config)
 
             save_all(
-                result, file_path, output_dir, base_name,
-                save_images=True, save_json=True, save_markdown=True
+                result, file_path, base_filename=base_name,
+                save_images_flag=True, save_json_flag=True, save_markdown_flag=True
             )
 
             results.append({
@@ -134,15 +127,12 @@ def create_argument_parser():
     # 从环境变量读取默认值
     default_backend = os.environ.get("OCR_BACKEND", "api")
     default_input = os.environ.get("OCR_INPUT", "F:/papers/arxiv")
-    default_output = os.environ.get("OCR_OUTPUT", "./output")
 
-    parser.add_argument("--source", type=str, default="local",
+    parser.add_argument("--source", type=str, default="mongo",
                         choices=["local", "mongo", "mixed"],
                         help="输入来源: local(仅本地), mongo(MongoDB驱动), mixed(本地扫描+智能更新MongoDB)")
     parser.add_argument("--input", "-i", type=str, default=default_input,
                         help="输入文件或目录")
-    parser.add_argument("--output", "-o", type=str, default=default_output,
-                        help="输出目录")
     parser.add_argument("--backend", type=str, default=default_backend,
                         help=f"OCR后端 ({', '.join(list_backends())})")
     parser.add_argument("--force", action="store_true",
@@ -179,7 +169,7 @@ def main():
     elif args.source == "mongo":
         # 从 MongoDB 获取未解析文件
         try:
-            from pdf_ocr_toolkit.mongodb import MongoPaperStore
+            from mongodb import MongoPaperStore
             mongo_store = MongoPaperStore(
                 os.environ.get("MONGO_URI", "mongodb://localhost:27017"),
                 os.environ.get("MONGO_DB", "acl_anthology"),
@@ -232,7 +222,7 @@ def main():
     try:
         for file_path in tqdm(files, desc="正在处理"):
             base_name = Path(file_path).stem
-            output_dir = Path(args.output) / base_name
+            output_dir = Path(file_path).parent / base_name
 
             # 检查是否需要跳过
             if not args.force and file_exists(str(output_dir), base_name):
@@ -260,10 +250,10 @@ def main():
                     result = ocr_processor(file_path)
 
                 save_all(
-                    result, file_path, str(output_dir), base_name,
-                    save_images=not args.no_images,
-                    save_json=not args.no_json,
-                    save_markdown=not args.no_markdown,
+                    result, file_path, base_filename=base_name,
+                    save_images_flag=not args.no_images,
+                    save_json_flag=not args.no_json,
+                    save_markdown_flag=not args.no_markdown,
                 )
 
                 # 更新 MongoDB 状态（如果有对应记录）
