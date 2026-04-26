@@ -1,6 +1,7 @@
 """API后端实现"""
 
-from typing import Dict, Any
+import os
+from typing import Dict, Any, Optional
 import base64
 import requests
 
@@ -9,8 +10,14 @@ def process_with_api(
     file_path: str,
     api_url: str,
     api_token: str,
+    timeout: Optional[int] = None,
 ) -> Dict[str, Any]:
     """使用远程 API 处理文件"""
+    if timeout is None:
+        timeout_str = os.environ.get("OCR_API_TIMEOUT")
+        if timeout_str:
+            timeout = int(timeout_str)
+
     with open(file_path, 'rb') as file:
         file_bytes = file.read()
         file_data = base64.b64encode(file_bytes).decode("ascii")
@@ -32,7 +39,10 @@ def process_with_api(
 
     payload = {**required_payload, **optional_payload}
 
-    response = requests.post(api_url, json=payload, headers=headers)
+    kwargs = {}
+    if timeout is not None:
+        kwargs['timeout'] = timeout
+    response = requests.post(api_url, json=payload, headers=headers, **kwargs)
     response.raise_for_status()
     api_result = response.json()
 
