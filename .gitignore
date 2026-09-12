@@ -59,6 +59,9 @@ htmlcov/
 temp/
 tmp/
 
+# WorkBuddy 本地工作区记忆
+.workbuddy/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 

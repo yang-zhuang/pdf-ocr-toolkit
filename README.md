@@ -1,384 +1,175 @@
 # PDF OCR Toolkit
 
-一个功能强大的 PDF 文档解析工具，支持 OCR 文字识别、公式识别，并可与 MongoDB 集成管理论文解析状态。
+批量把 PDF 交给 PaddleOCR-VL 解析：递归扫描一个根目录下的所有 `*.pdf`，每篇论文在**它所在目录的上一级**生成一个结果目录，里面只有 `imgs/` 和一个 JSON。
 
-## ✨ 功能特性
+## 代码组织
 
-- **多后端支持**：支持 PaddleOCR 本地处理和远程 API 调用
-- **MongoDB 集成**：三种工作模式，灵活管理论文解析状态
-- **批量处理**：高效处理大量 PDF 文件
-- **多种输出格式**：支持 Markdown、JSON、图片等多种输出格式
-- **智能状态管理**：自动记录解析状态，避免重复处理
-- **错误处理**：完善的错误记录和重试机制
-- **灵活配置**：通过环境变量或命令行参数灵活配置
+```
+pdf-ocr-toolkit/
+├── ocr_pdfs.py            # 全部逻辑，约 180 行，无类、无框架、无数据库
+├── .env                   # 本地配置（含 token，已被 .gitignore 忽略）
+├── .env.example           # 配置模板
+├── requirements.txt       # requests / python-dotenv / tqdm / pypdf
+├── scripts/
+│   ├── run_official.sh    # 用官方 API 全量跑
+│   ├── run_local.sh       # 用私有化部署全量跑
+│   └── test.sh            # 只跑 1 篇，验证配置是否通
+├── README.md
+└── LICENSE
+```
 
-## 📦 安装
+`ocr_pdfs.py` 内部就五块，从上往下读即可：
 
-### 前置要求
+| 位置 | 内容 |
+| --- | --- |
+| 顶部 | argparse 参数 + 从 `.env` 读配置常量 |
+| 小工具 | `log`（tqdm 打印）、`win_long`（Windows 长路径）、`count_pages`（本地数页数）、`valid_json`（判断旧结果是否可续用）、`save_image`（存图） |
+| `ocr_official` | 官方 API：提交任务 → 轮询 → 拉 jsonl，返回每页结果 |
+| `ocr_local` | 私有化部署：POST base64 到 `/layout-parsing`，同步返回 |
+| `process` | 一个 PDF：断点续传判断 → 取结果 → 存图 → 写 JSON |
+| `main` | 扫描 PDF → tqdm 循环 → 汇总成功/跳过/失败 |
 
-- Python 3.8+
-- MongoDB（可选，用于 MongoDB 模式）
-
-### 安装步骤
+## 安装
 
 ```bash
-# 克隆项目
-git clone <your-repo-url>
-cd pdf_ocr_toolkit
-
-# 安装依赖
 pip install -r requirements.txt
 ```
 
-### requirements.txt
+## 获取官方 API token
 
-```
-paddleocr>=2.7.0
-pymongo>=4.0.0
-python-dotenv>=1.0.0
-tqdm>=4.65.0
-pillow>=10.0.0
-```
+`OCR_MODE=official` 需要 `PADDLEOCR_API_TOKEN`，获取步骤：
 
-## 🚀 快速开始
+1. 打开 <https://aistudio.baidu.com/paddleocr>（需登录百度账号）。
+2. 点页面上方的 **「API」** 按钮，弹出「API调用」对话框。
+3. 勾选 **「使用我的 AI Studio 访问令牌」**，再点代码块右上角的 **「复制代码」**——代码里的 `TOKEN = "..."` 那串就是你的 token，粘到 `.env` 的 `PADDLEOCR_API_TOKEN` 即可。
+   - 代码里的 `MODEL = "PaddleOCR-VL-1.6"` 对应对话框上方的模型标签页（另有 PP-OCRv6、PP-StructureV3），换了标签页就同步改 `.env` 的 `PADDLEOCR_MODEL`。
+   - 令牌属于个人账户隐私，别提交到仓库（`.env` 已被 `.gitignore` 忽略）。令牌丢了可以在对话框里点「点击获取令牌」重新取。
 
-### 1. 配置环境变量
+## 配置
 
-复制 `.env.example` 为 `.env` 并修改相应配置：
+复制 `.env.example` 为 `.env` 后改：
 
-```bash
-cp .env.example .env
-```
+| 变量 | 说明 | 默认 |
+| --- | --- | --- |
+| `PDF_INPUT_DIR` | 递归扫描的根目录，找所有 `*.pdf` | `/path/to/papers` |
+| `OCR_MODE` | `official` = 官方 API；`local` = 私有化部署 | `official` |
+| `PDF_ORDER` | `path` = 按扫描到的原始顺序；`pages` = 页数少的先解析 | `path` |
+| `OUTPUT_DIR_NAME` | 结果文件夹名（建在 PDF 所在文件夹的上一级） | `paddle_ocr_vl_1_6` |
+| `OUTPUT_JSON_NAME` | 结果 JSON 的固定文件名（不带 PDF 名 / 论文名） | `paddle_ocr_vl.json` |
+| `PADDLEOCR_API_TOKEN` | 官方 API token（`OCR_MODE=official` 必填，获取方法见上一节） | - |
+| `PADDLEOCR_MODEL` | 官方模型名，与 AI Studio 对话框里的模型标签页对应 | `PaddleOCR-VL-1.6` |
+| `LOCAL_API_URL` | 私有化部署地址（`OCR_MODE=local`） | `http://127.0.0.1:8080/layout-parsing` |
+| `LOCAL_API_TOKEN` | 私有化部署 token，可空 | 空 |
+| `POLL_INTERVAL` / `POLL_TIMEOUT` | 官方 API 轮询间隔 / 超时（秒） | `5` / `3600` |
 
-### 2. 基本使用
+## 用法
 
-```bash
-# Local 模式：扫描本地文件
-python -m pdf_ocr_toolkit.main --source=local --input=./papers --output=./output
-
-# MongoDB 模式：从 MongoDB 获取待解析文件
-python -m pdf_ocr_toolkit.main --source=mongo
-
-# Mixed 模式：扫描本地 + 智能更新 MongoDB
-python -m pdf_ocr_toolkit.main --source=mixed --input=./papers
-```
-
-## 📖 使用模式
-
-### Local 模式
-
-**适用场景**：独立的本地文件处理，不需要 MongoDB
+必须在仓库根目录执行（脚本里是相对路径）：
 
 ```bash
-python -m pdf_ocr_toolkit.main \
-    --source=local \
-    --input=./papers \
-    --output=./output \
-    --backend=api
+python ocr_pdfs.py                     # 全部按 .env
+python ocr_pdfs.py --mode local        # 临时切私有化部署
+python ocr_pdfs.py --order pages       # 先解析页数少的
+python ocr_pdfs.py --limit 2           # 只跑前 2 篇，先验证效果
+python ocr_pdfs.py --input /data/papers --dir-name paddle_ocr_vl_1_6
 ```
 
-**特点**：
-- 扫描指定目录下的所有 PDF 文件
-- 不访问 MongoDB
-- 适合小型项目或临时任务
+命令行参数会覆盖 `.env`：`--input`、`--mode`、`--order`、`--dir-name`、`--limit`。
 
-### MongoDB 模式
-
-**适用场景**：集中式管理论文解析状态
+`scripts/` 下三个一行脚本：
 
 ```bash
-python -m pdf_ocr_toolkit.main \
-    --source=mongo \
-    --output=./output \
-    --backend=api
+bash scripts/run_official.sh    # python ocr_pdfs.py --mode official
+bash scripts/run_local.sh       # python ocr_pdfs.py --mode local
+bash scripts/test.sh            # python ocr_pdfs.py --mode official --limit 1
 ```
 
-**特点**：
-- 从 MongoDB 读取未解析文件列表
-- 处理完成后自动更新 MongoDB 状态
-- 支持断点续传和错误重试
-- 适合生产环境和大规模处理
+## 解析顺序
 
-### Mixed 模式
+`PDF_ORDER` 决定先解析哪一篇，取两个值：
 
-**适用场景**：灵活的本地处理 + 状态管理
+| 值 | 行为 |
+| --- | --- |
+| `path`（默认） | 按路径扫描出来的原始顺序，稳定可预期，不额外读文件 |
+| `pages` | 先解析**页数少**的，再解析页数多的（升序） |
 
-```bash
-python -m pdf_ocr_toolkit.main \
-    --source=mixed \
-    --input=./papers \
-    --output=./output \
-    --backend=api
-```
+选 `pages` 时，脚本会先用 `pypdf` 在本地把每个 PDF 的页数数一遍（会多一个 `统计页数` 进度条），然后按页数升序排。
 
-**特点**：
-- 扫描本地文件
-- 智能匹配 MongoDB 记录
-- 匹配到的文件会更新状态
-- 未匹配的文件正常处理
-- 适合渐进式迁移和混合场景
+- 好处：先用小文件把整条链路跑通、拿到结果，大文件排后面，中断了也不影响已出的结果。
+- 页数读不出来的 PDF（损坏、加密）会被排到最后，但**不会被跳过**，照样会尝试解析。
+- 数页数是纯本地 IO，不消耗 API 额度。
+- 注意 `--limit` 是在排序**之后**才截断的，所以 `--order pages --limit 3` 会取最短的 3 篇。
 
-## ⚙️ 配置说明
+## 输出结构
 
-### 环境变量配置
-
-```bash
-# OCR 后端选择
-OCR_BACKEND=api  # 可选: paddle, api
-
-# MongoDB 配置（mongo/mixed 模式需要）
-MONGO_URI=mongodb://localhost:27017
-MONGO_DB=acl_anthology
-MONGO_COLLECTION=papers
-MONGO_PATH_FIELD=pdf_file
-PDF_BASE_PATH=F:/papers/arxiv
-
-# 输入输出路径
-OCR_INPUT=F:/papers/arxiv
-OCR_OUTPUT=./output
-
-# PaddleOCR 配置（backend=paddle 时需要）
-VL_REC_BACKEND=vllm-server
-VL_REC_SERVER_URL=http://localhost:8118/v1
-VL_REC_API_MODEL_NAME=PaddleOCR-VL-1.5-0.9B
-
-# API 配置（backend=api 时需要）
-OCR_API_URL=https://your-api-endpoint.com/layout-parsing
-OCR_API_TOKEN=your-api-token
-```
-
-### 命令行参数
-
-```bash
-python -m pdf_ocr_toolkit.main [OPTIONS]
-
-选项:
-  --source {local,mongo,mixed}  输入来源模式
-  --input, -i PATH              输入文件或目录
-  --output, -o PATH             输出目录
-  --backend {paddle,api}        OCR 后端选择
-  --force                       强制重新处理已存在文件
-  --no-images                   不保存图片
-  --no-json                     不保存 JSON
-  --no-markdown                 不保存 Markdown
-  --vl-rec-backend TEXT         公式识别后端
-  --vl-rec-server-url TEXT      VLLM 服务器地址
-  --vl-rec-api-model-name TEXT  VLLM 模型名称
-```
-
-## 📝 MongoDB 数据结构
-
-### 集合结构
-
-```javascript
-{
-  "_id": ObjectId("..."),
-  "pdf_file": "arxiv/2023/1234.pdf",  // 相对路径
-  "title": "论文标题",
-  "authors": ["作者1", "作者2"],
-  "pdf_parse": {
-    "parsed": true,                    // 是否已解析
-    "parsed_at": ISODate("2024-04-24"),  // 解析时间
-    "ocr_model": "api",                // 使用的 OCR 模型
-    "parse_result_dir": "./output/1234",  // 结果目录
-    "parse_error": null                // 错误信息（如有）
-  }
-}
-```
-
-## 🔄 工作流程
-
-### Local 模式流程
+结果目录建在 **PDF 所在目录的上一级**：
 
 ```
-扫描本地文件 → OCR 处理 → 保存结果
+<论文目录>/
+├── pdf/                          # PDF 所在的目录，名字随意、可有多层
+│   └── xxx.pdf
+└── paddle_ocr_vl_1_6/            # <- 结果目录（名字由 OUTPUT_DIR_NAME 决定）
+    ├── imgs/                     # 该 PDF 的全部图片，扁平存放
+    │   └── img_in_image_box_612_1040_1046_1201.jpg
+    └── paddle_ocr_vl.json        # 固定文件名，由 OUTPUT_JSON_NAME 决定
 ```
 
-### MongoDB 模式流程
-
-```
-查询未解析文件 → OCR 处理 → 更新 MongoDB 状态
-     ↓                           ↓
-  获取 paper_id            mark_parsed()
-     ↓                           ↓
-  文件路径映射              或 mark_error()
-```
-
-### Mixed 模式流程
-
-```
-扫描本地文件 → 批量查询 MongoDB → 匹配 paper_id
-     ↓                              ↓
-  OCR 处理                     如果匹配则：
-     ↓                       - 处理成功：mark_parsed()
-  保存结果                   - 处理失败：mark_error()
-```
-
-## 📊 输出格式
-
-处理完成后，每个 PDF 会生成一个独立的输出目录：
-
-```
-output/
-├── paper_1/
-│   ├── full_markdown.md    # 完整 Markdown（推荐）
-│   ├── structured.json     # 结构化 JSON 数据
-│   ├── pages/              # 逐页图片
-│   │   ├── page_001.jpg
-│   │   ├── page_002.jpg
-│   │   └── ...
-```
-
-### Markdown 输出示例
-
-```markdown
-# 论文标题
-
-## 第 1 页
-
-[页面文字内容...]
-
-## 第 2 页
-
-[更多内容...]
-```
-
-### JSON 输出结构
+## JSON 结构
 
 ```json
 {
-  "file_path": "path/to/paper.pdf",
-  "total_pages": 10,
+  "total_pages": 20,
   "pages": [
-    {
-      "page_number": 1,
-      "text": "页面文字内容",
-      "images": ["path/to/image.jpg"]
-    }
+    [
+      { "label": "fig", "figure_path": "imgs/img_in_image_box_612_1040_1046_1201.jpg" },
+      { "page_index": 0, "page_content": "# 标题\n\n正文 markdown ..." }
+    ],
+    [
+      { "page_index": 1, "page_content": "## 1 Introduction\n\n..." }
+    ]
   ]
 }
 ```
 
-## 🛠️ 作为库使用
+顶层两个字段：
 
-### 处理单个文件
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `total_pages` | int | 实际解析出的页数，等于 `pages` 的长度 |
+| `pages` | array | 每一页一个元素，顺序与 PDF 页序一致 |
 
-```python
-from pdf_ocr_toolkit import process_pdf
+`pages` 的每个元素是一个**数组**，里面是若干条目。条目只有两种形状：
 
-result = process_pdf("paper.pdf", backend="api")
-print(result['full_markdown'])
-```
+| 条目 | 字段 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| 图片条目 | `label` | string | 条目类型，目前恒为 `"fig"`（插图） |
+| | `figure_path` | string | 图片相对结果目录的路径，固定为 `imgs/<文件名>`；文件一定已落盘 |
+| 正文条目 | `page_index` | int | 页序号，从 `0` 开始，等于该页在 `pages` 里的下标 |
+| | `page_content` | string | 该页的 Markdown 正文（含公式、表格） |
 
-### 批量处理
+排列顺序：**图片条目在前**（按 PaddleOCR 返回顺序），**正文条目永远是最后一个元素**。
 
-```python
-from pdf_ocr_toolkit import process_batch
+> **注意：不是每页都有 `label` / `figure_path`。**
+> 页面上没有插图时，那一页只有一个元素——正文条目。上面第 2 页就是这种页。
+> 实测 400 篇论文共 7666 页，其中 **68.6% 的页面没有图片条目**。
+> 想安全地取一页的图片，用 `[x for x in page if "label" in x]`，不要假设 `page[0]` 是图片。
 
-results = process_batch("./papers", backend="api")
-success_count = sum(1 for r in results if r['success'])
-print(f"成功处理 {success_count}/{len(results)} 个文件")
-```
+## 断点续传与失败重试
 
-## 🐛 常见问题
+- **断点续传**：结果目录里 `paddle_ocr_vl.json` 存在**且能正常解析** → 直接跳过，重复跑不会重复花钱。若该文件存在但已损坏（上次写了一半崩掉），判定为无效，自动删掉重新解析。
+- **失败重试**：解析失败只打印错误、**不写 JSON**，并清掉半成品 `imgs/` 和写了一半的 JSON，下一篇继续；下次重跑该篇会完整重来。结尾打印失败清单。
+- **单篇异常不中断整批**：每篇都包在 try/except 里，任何异常（HTTP 非 200、任务 `failed`、轮询超时、网络中断、JSON 缺字段、写盘失败等）都只影响当前这一篇，记录到失败清单后继续下一篇。唯一例外是 `Ctrl-C`——它是 `KeyboardInterrupt`，不被吞掉，会整体中断（想停就停）。
+- **空结果也算失败**：接口返回 200 但一页都没有（`layoutParsingResults` 为空）时按失败处理，不会写出一个 0 页的 JSON 然后被当成"已完成"永远跳过。
+- 进度条用 tqdm，形如 `OCR: 100%|██████████| 1/1 [01:32<00:00, 92.27s/篇]`；每篇结束打印耗时，最后打印总耗时。
 
-### 1. MongoDB 连接失败
+## 两种模式
 
-**错误**：`MongoDB 连接失败`
+- `official`：走 PaddleOCR 官方 job API（提交 → 轮询 → 拉 jsonl），需要 token，异步。额度与限制（AI Studio 对话框里的「API调用须知」）：
+  - 每个模型有**当日解析页数上限**（默认 20000 页/天，对话框里显示为「今日调用解析页数 0 / 20,000」），超上限返回 **429**，可在对话框里「申请更多页数」。
+  - 单个文件大小无限制，但建议控制在 **100 页内**，**超出部分将被忽略不解析**。
+- `local`：POST base64 到你自己的 `/layout-parsing` 服务，同步返回。页数上限由你的产线配置决定（`Serving.extra.max_num_input_imgs`，为 `null` 则不限）。图片字段两种模式都兼容（`http` 开头当 URL 下载，否则按 base64 解码）。
 
-**解决**：
-- 检查 MongoDB 服务是否运行
-- 确认 `MONGO_URI` 配置正确
-- 验证网络连接和防火墙设置
+## 注意
 
-### 2. 文件路径不匹配
-
-**错误**：Mixed 模式下文件无法匹配 MongoDB 记录
-
-**解决**：
-- 确认 `PDF_BASE_PATH` 与 MongoDB 中的相对路径基准一致
-- 检查 `MONGO_PATH_FIELD` 字段名是否正确
-- 查看控制台输出的匹配数量
-
-### 3. 已处理文件被重复处理
-
-**原因**：输出目录不存在但 MongoDB 状态已更新
-
-**解决**：
-- 使用 `--force` 强制重新处理
-- 或手动删除 MongoDB 中的解析状态
-
-## 🔧 开发指南
-
-### 项目结构
-
-```
-pdf_ocr_toolkit/
-├── __init__.py           # 包初始化
-├── main.py               # CLI 入口和 API
-├── mongodb.py            # MongoDB 集成
-├── utils.py              # 工具函数
-├── ocr/                  # OCR 后端实现
-│   ├── __init__.py
-│   ├── paddle_backend.py
-│   └── api_backend.py
-├── .env                  # 环境变量配置
-├── .gitignore           # Git 忽略文件
-└── README.md            # 项目文档
-```
-
-### 添加新的 OCR 后端
-
-1. 在 `ocr/` 目录下创建新的后端文件
-2. 实现处理函数
-3. 在 `ocr/__init__.py` 中注册后端
-4. 更新文档和配置示例
-
-## 📝 更新日志
-
-### v1.1.0 (2024-04-24)
-
-- ✨ 新增 `--source=mixed` 模式
-- ✨ 优化 MongoDB 状态更新机制
-- ✨ 添加批量查询优化
-- ✨ 改进错误处理和日志记录
-- ✨ 完善中文文档
-
-### v1.0.0 (2024-04-20)
-
-- 🎉 初始版本发布
-- ✨ 支持 Local 和 MongoDB 模式
-- ✨ 实现 PaddleOCR 和 API 双后端
-
-## 🤝 贡献指南
-
-欢迎提交 Issue 和 Pull Request！
-
-1. Fork 本项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
-
-## 👥 作者
-
-- Your Name - Initial work
-
-## 🙏 致谢
-
-- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) - 优秀的 OCR 框架
-- [pymongo](https://github.com/mongodb/mongo-python-driver) - MongoDB Python 驱动
-- 所有贡献者
-
-## 📮 联系方式
-
-- 项目主页：[GitHub Repository]
-- 问题反馈：[GitHub Issues]
-
----
-
-⭐ 如果这个项目对你有帮助，请给个 Star！
+- Windows 长路径（>240 字符）会自动加 `\\?\` 前缀，论文名过长也不怕写不进文件。
+- 官方 API 解析出的页数少于 PDF 实际页数，通常是撞了上面那条 100 页限制；`local` 模式则要看产线配置 `max_num_input_imgs`，脚本侧改不了。
