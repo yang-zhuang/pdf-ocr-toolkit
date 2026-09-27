@@ -37,12 +37,12 @@ pip install -r requirements.txt
 
 ## 获取官方 API token
 
-`OCR_MODE=official` 需要 `PADDLEOCR_API_TOKEN`，获取步骤：
+`OCR_MODE=official` 需要 `TOKEN`，获取步骤：
 
 1. 打开 <https://aistudio.baidu.com/paddleocr>（需登录百度账号）。
 2. 点页面上方的 **「API」** 按钮，弹出「API调用」对话框。
-3. 勾选 **「使用我的 AI Studio 访问令牌」**，再点代码块右上角的 **「复制代码」**——代码里的 `TOKEN = "..."` 那串就是你的 token，粘到 `.env` 的 `PADDLEOCR_API_TOKEN` 即可。
-   - 代码里的 `MODEL = "PaddleOCR-VL-1.6"` 对应对话框上方的模型标签页（另有 PP-OCRv6、PP-StructureV3），换了标签页就同步改 `.env` 的 `PADDLEOCR_MODEL`。
+3. 勾选 **「使用我的 AI Studio 访问令牌」**，再点代码块右上角的 **「复制代码」**——代码里的 `JOB_URL` / `TOKEN` / `MODEL` 三行直接粘到 `.env` 即可（键名完全一致，不用改名）。
+   - `MODEL = "PaddleOCR-VL-1.6"` 对应对话框上方的模型标签页（另有 PP-OCRv6、PP-StructureV3），换了标签页就同步改 `.env` 的 `MODEL`。
    - 令牌属于个人账户隐私，别提交到仓库（`.env` 已被 `.gitignore` 忽略）。令牌丢了可以在对话框里点「点击获取令牌」重新取。
 
 ## 配置
@@ -56,8 +56,9 @@ pip install -r requirements.txt
 | `PDF_ORDER` | `path` = 按扫描到的原始顺序；`pages` = 页数少的先解析 | `path` |
 | `OUTPUT_DIR_NAME` | 结果文件夹名（建在 PDF 所在文件夹的上一级） | `paddle_ocr_vl_1_6` |
 | `OUTPUT_JSON_NAME` | 结果 JSON 的固定文件名（不带 PDF 名 / 论文名） | `paddle_ocr_vl.json` |
-| `PADDLEOCR_API_TOKEN` | 官方 API token（`OCR_MODE=official` 必填，获取方法见上一节） | - |
-| `PADDLEOCR_MODEL` | 官方模型名，与 AI Studio 对话框里的模型标签页对应 | `PaddleOCR-VL-1.6` |
+| `JOB_URL` | 官方 API 的任务地址（`OCR_MODE=official`） | `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs` |
+| `TOKEN` | 官方 API token（`OCR_MODE=official` 必填，获取方法见上一节） | - |
+| `MODEL` | 官方模型名，与 AI Studio 对话框里的模型标签页对应 | `PaddleOCR-VL-1.6` |
 | `LOCAL_API_URL` | 私有化部署地址（`OCR_MODE=local`） | `http://127.0.0.1:8080/layout-parsing` |
 | `LOCAL_API_TOKEN` | 私有化部署 token，可空 | 空 |
 | `POLL_INTERVAL` / `POLL_TIMEOUT` | 官方 API 轮询间隔 / 超时（秒） | `5` / `3600` |
@@ -98,6 +99,7 @@ bash scripts/test.sh            # python ocr_pdfs.py --mode official --limit 1
 - 好处：先用小文件把整条链路跑通、拿到结果，大文件排后面，中断了也不影响已出的结果。
 - 页数读不出来的 PDF（损坏、加密）会被排到最后，但**不会被跳过**，照样会尝试解析。
 - 数页数是纯本地 IO，不消耗 API 额度。
+- **页数会缓存**：结果写进仓库根目录的 `.page_cache.json`，key 是 PDF 绝对路径，值是 `[mtime_ns, 字节数, 页数]`。下次启动先 `os.stat` 比对（只 stat 不打开 PDF，几千个文件也就几秒），文件没变过就直接复用上次的页数，只有新增/改动过的才重新数。所以只有**第一次**慢，之后每次启动的统计阶段几乎瞬间完成。启动时会打印一行「本次新数 N 篇，复用 M 篇」。缓存文件已被 `.gitignore` 忽略，删掉它就回到全量重数。
 - 注意 `--limit` 是在排序**之后**才截断的，所以 `--order pages --limit 3` 会取最短的 3 篇。
 
 ## 输出结构

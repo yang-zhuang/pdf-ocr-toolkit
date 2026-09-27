@@ -47,6 +47,9 @@ env/
 output/
 *.log
 
+# 页数缓存（本地生成，PDF_ORDER=pages 用）
+.page_cache.json
+
 # 测试文件
 .pytest_cache/
 .coverage

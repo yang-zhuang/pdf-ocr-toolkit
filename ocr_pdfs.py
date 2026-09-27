@@ -42,12 +42,15 @@ JSON_NAME = os.getenv("OUTPUT_JSON_NAME", "paddle_ocr_vl.json")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
 POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "3600"))
 
-OFFICIAL_JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
-OFFICIAL_TOKEN = os.getenv("PADDLEOCR_API_TOKEN", "")
-OFFICIAL_MODEL = os.getenv("PADDLEOCR_MODEL", "PaddleOCR-VL-1.6")
+OFFICIAL_JOB_URL = os.getenv("JOB_URL", "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs")
+OFFICIAL_TOKEN = os.getenv("TOKEN", "")
+OFFICIAL_MODEL = os.getenv("MODEL", "PaddleOCR-VL-1.6")
 
 LOCAL_API_URL = os.getenv("LOCAL_API_URL", "http://127.0.0.1:8080/layout-parsing")
 LOCAL_API_TOKEN = os.getenv("LOCAL_API_TOKEN", "")
+
+# 页数缓存：{PDF 绝对路径: [mtime_ns, 字节数, 页数]}，PDF_ORDER=pages 时避免每次重启都重数一遍
+CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".page_cache.json")
 
 OPTIONAL_PAYLOAD = {
     "useDocOrientationClassify": False,
@@ -190,7 +193,7 @@ def main():
     if not INPUT_DIR:
         raise SystemExit("请在 .env 里设置 PDF_INPUT_DIR，或用 --input 指定")
     if MODE == "official" and not OFFICIAL_TOKEN:
-        raise SystemExit("请在 .env 里设置 PADDLEOCR_API_TOKEN")
+        raise SystemExit("请在 .env 里设置 TOKEN")
 
     pdfs = sorted(set(glob.glob(os.path.join(INPUT_DIR, "**", "*.pdf"), recursive=True))
                   | set(glob.glob(os.path.join(INPUT_DIR, "**", "*.PDF"), recursive=True)))
@@ -198,9 +201,25 @@ def main():
         raise SystemExit(f"没找到 PDF：{INPUT_DIR}")
 
     counts = {}
-    if ORDER == "pages":        # 先本地数页数，页数少的先解析
+    if ORDER == "pages":        # 先本地数页数，页数少的先解析（结果存 .page_cache.json，下次直接复用）
+        try:
+            with open(CACHE_PATH, encoding="utf-8") as f:
+                cache = json.load(f)
+        except Exception:
+            cache = {}
+        fresh = 0
         for pdf in tqdm(pdfs, desc="统计页数", unit="篇"):
-            counts[pdf] = count_pages(pdf)
+            st = os.stat(win_long(pdf))
+            hit = cache.get(pdf)
+            if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:   # 文件没变过，直接用上次的页数
+                counts[pdf] = hit[2]
+            else:
+                counts[pdf] = count_pages(pdf)
+                cache[pdf] = [st.st_mtime_ns, st.st_size, counts[pdf]]
+                fresh += 1
+        with open(CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+        log(f"  页数缓存 {CACHE_PATH}：本次新数 {fresh} 篇，复用 {len(pdfs) - fresh} 篇")
         pdfs.sort(key=lambda p: (counts[p] is None, counts[p] or 0))   # 页数读不出来的排最后
 
     if args.limit:
