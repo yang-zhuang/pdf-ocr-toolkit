@@ -64,6 +64,18 @@ def log(msg):
     tqdm.write(str(msg))
 
 
+def http_retry(fn, tries=3, wait=5):
+    """瞬时网络错误（连接被重置 / SSL 中断 / 响应截断）当场重试，重试耗尽才抛出"""
+    for i in range(tries):
+        try:
+            return fn()
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.JSONDecodeError) as e:
+            if i == tries - 1:
+                raise
+            log(f"    网络抖动，{wait}s 后重试（第 {i + 1}/{tries - 1} 次）：{type(e).__name__}")
+            time.sleep(wait)
+
+
 def win_long(p):
     """Windows 长路径（>240 字符）加 \\\\?\\ 前缀"""
     p = os.path.abspath(p)
@@ -99,13 +111,18 @@ def save_image(value, dest):
 def ocr_official(pdf_path):
     """官方 API：提交任务 -> 轮询 -> 拉 jsonl，返回每页 layoutParsingResults"""
     headers = {"Authorization": f"bearer {OFFICIAL_TOKEN}"}
-    with open(win_long(pdf_path), "rb") as f:
-        resp = requests.post(
+
+    def submit():
+        f.seek(0)   # 重试要从头再传一遍
+        return requests.post(
             OFFICIAL_JOB_URL,
             headers=headers,
             data={"model": OFFICIAL_MODEL, "optionalPayload": json.dumps(OPTIONAL_PAYLOAD)},
             files={"file": f},
         )
+
+    with open(win_long(pdf_path), "rb") as f:
+        resp = http_retry(submit)
     if resp.status_code != 200:
         raise RuntimeError(f"提交失败 {resp.status_code}: {resp.text[:300]}")
     job_id = resp.json()["data"]["jobId"]
@@ -113,10 +130,11 @@ def ocr_official(pdf_path):
 
     deadline = time.time() + POLL_TIMEOUT
     while True:
-        data = requests.get(f"{OFFICIAL_JOB_URL}/{job_id}", headers=headers, timeout=60).json()["data"]
+        data = http_retry(lambda: requests.get(
+            f"{OFFICIAL_JOB_URL}/{job_id}", headers=headers, timeout=60).json())["data"]
         state = data["state"]
         if state == "done":
-            jsonl = requests.get(data["resultUrl"]["jsonUrl"], timeout=300).text
+            jsonl = http_retry(lambda: requests.get(data["resultUrl"]["jsonUrl"], timeout=300).text)
             results = []
             for line in jsonl.strip().split("\n"):
                 if line.strip():
@@ -138,8 +156,9 @@ def ocr_local(pdf_path):
     headers = {"Content-Type": "application/json"}
     if LOCAL_API_TOKEN:
         headers["Authorization"] = f"token {LOCAL_API_TOKEN}"
-    resp = requests.post(LOCAL_API_URL, json={"file": b64, "fileType": 0, **OPTIONAL_PAYLOAD},
-                         headers=headers, timeout=POLL_TIMEOUT)
+    resp = http_retry(lambda: requests.post(
+        LOCAL_API_URL, json={"file": b64, "fileType": 0, **OPTIONAL_PAYLOAD},
+        headers=headers, timeout=POLL_TIMEOUT))
     if resp.status_code != 200:
         raise RuntimeError(f"请求失败 {resp.status_code}: {resp.text[:300]}")
     return resp.json()["result"]["layoutParsingResults"]
